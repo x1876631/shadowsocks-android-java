@@ -10,6 +10,7 @@ import android.net.VpnService;
 import android.os.Build;
 import android.os.Handler;
 import android.os.ParcelFileDescriptor;
+import android.util.Log;
 
 import com.vm.shadowsocks.R;
 import com.vm.shadowsocks.core.ProxyConfig.IPAddress;
@@ -20,16 +21,23 @@ import com.vm.shadowsocks.tcpip.TCPHeader;
 import com.vm.shadowsocks.tcpip.UDPHeader;
 import com.vm.shadowsocks.ui.MainActivity;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.zip.GZIPInputStream;
 
+/**
+ * 本地vpn服务
+ */
 public class LocalVpnService extends VpnService implements Runnable {
 
     public static LocalVpnService Instance;
@@ -46,7 +54,7 @@ public class LocalVpnService extends VpnService implements Runnable {
     private DnsProxy m_DnsProxy;
     private FileOutputStream m_VPNOutputStream;
 
-    private byte[] m_Packet;
+    private byte[] m_Packet;//接收数据缓存
     private IPHeader m_IPHeader;
     private TCPHeader m_TCPHeader;
     private UDPHeader m_UDPHeader;
@@ -72,6 +80,7 @@ public class LocalVpnService extends VpnService implements Runnable {
     public void onCreate() {
         System.out.printf("VPNService(%s) created.\n", ID);
         // Start a new session by creating a new thread.
+        //开个线程执行自己，具体抓包逻辑见：run()
         m_VPNThread = new Thread(this, "VPNServiceThread");
         m_VPNThread.start();
         super.onCreate();
@@ -174,6 +183,7 @@ public class LocalVpnService extends VpnService implements Runnable {
 
             writeLog("Load config from file ...");
             try {
+                //初始化一些代理配置
                 ProxyConfig.Instance.loadFromFile(getResources().openRawResource(R.raw.config));
                 writeLog("Load done");
             } catch (Exception e) {
@@ -184,25 +194,27 @@ public class LocalVpnService extends VpnService implements Runnable {
                 writeLog("Load failed with error: %s", errString);
             }
 
+            //启动tcp代理服务
             m_TcpProxyServer = new TcpProxyServer(0);
             m_TcpProxyServer.start();
             writeLog("LocalTcpServer started.");
 
+            //启动dns代理服务
             m_DnsProxy = new DnsProxy();
             m_DnsProxy.start();
             writeLog("LocalDnsProxy started.");
 
             while (true) {
+                //当前线程一直监听服务是否运行
                 if (IsRunning) {
                     //加载配置文件
-
                     writeLog("set shadowsocks/(http proxy)");
                     try {
                         ProxyConfig.Instance.m_ProxyList.clear();
+                        //设置代理url
                         ProxyConfig.Instance.addProxyToList(ProxyUrl);
                         writeLog("Proxy is: %s", ProxyConfig.Instance.getDefaultProxy());
                     } catch (Exception e) {
-                        ;
                         String errString = e.getMessage();
                         if (errString == null || errString.isEmpty()) {
                             errString = e.toString();
@@ -217,6 +229,7 @@ public class LocalVpnService extends VpnService implements Runnable {
                     }
                     writeLog("Global mode is " + (ProxyConfig.Instance.globalMode ? "on" : "off"));
 
+                    //直到这里才是真正去执行抓包
                     runVPN();
                 } else {
                     Thread.sleep(100);
@@ -233,17 +246,23 @@ public class LocalVpnService extends VpnService implements Runnable {
         }
     }
 
+    /**
+     * 关键函数：执行抓包
+     */
     private void runVPN() throws Exception {
+        //初始化一些连接配置
         this.m_VPNInterface = establishVPN();
         this.m_VPNOutputStream = new FileOutputStream(m_VPNInterface.getFileDescriptor());
         FileInputStream in = new FileInputStream(m_VPNInterface.getFileDescriptor());
         int size = 0;
         while (size != -1 && IsRunning) {
+            //不断去读数据
             while ((size = in.read(m_Packet)) > 0 && IsRunning) {
                 if (m_DnsProxy.Stopped || m_TcpProxyServer.Stopped) {
                     in.close();
                     throw new Exception("LocalServer stopped.");
                 }
+                //todo 这里是数据相关的关键方法：数据的请求与接收
                 onIPPacketReceived(m_IPHeader, size);
             }
             Thread.sleep(20);
@@ -252,15 +271,22 @@ public class LocalVpnService extends VpnService implements Runnable {
         disconnectVPN();
     }
 
+    /**
+     * 解析ip数据包
+     */
     void onIPPacketReceived(IPHeader ipHeader, int size) throws IOException {
         switch (ipHeader.getProtocol()) {
+            //发现ip包里有传输层协议头，解析一下
             case IPHeader.TCP:
                 TCPHeader tcpHeader = m_TCPHeader;
                 tcpHeader.m_Offset = ipHeader.getHeaderLength();
                 if (ipHeader.getSourceIP() == LOCAL_IP) {
-                    if (tcpHeader.getSourcePort() == m_TcpProxyServer.Port) {// 收到本地TCP服务器数据
+                    // TODO: 收到的数据 http response begin
+                    if (tcpHeader.getSourcePort() == m_TcpProxyServer.Port) {
+                        // 收到本地TCP服务器数据
                         NatSession session = NatSessionManager.getSession(tcpHeader.getDestinationPort());
                         if (session != null) {
+                            // TODO: 2018/6/8 尝试修改思路：尝试去掉ip 和tcp header，解析http协议
                             ipHeader.setSourceIP(ipHeader.getDestinationIP());
                             tcpHeader.setSourcePort(session.RemotePort);
                             ipHeader.setDestinationIP(LOCAL_IP);
@@ -268,11 +294,40 @@ public class LocalVpnService extends VpnService implements Runnable {
                             CommonMethods.ComputeTCPChecksum(ipHeader, tcpHeader);
                             m_VPNOutputStream.write(ipHeader.m_Data, ipHeader.m_Offset, size);
                             m_ReceivedBytes += size;
+
+                            // TODO:本地添加的获取数据，并打印log的测试方法  begin
+                            int dataOffset = tcpHeader.m_Offset + tcpHeader.getHeaderLength();
+                            int tcpDataSize = ipHeader.getDataLength() - tcpHeader.getHeaderLength();
+                            switch (tcpHeader.m_Data[dataOffset]) {
+                                case 'H'://HEAD
+//                                    Log.e(">>>>>data", "响应的数据(http层)(byte版) begin:\n");
+//                                    StringBuilder sb = new StringBuilder();
+//                                    for(int i = dataOffset;i<tcpDataSize;i++){
+//                                        sb.append(tcpHeader.m_Data[i]);
+//                                    }
+//                                    Log.e(">>>>>data",sb.toString()+"\n响应的数据(http层)(byte版) end");
+
+                                    String httpResponse = new String(tcpHeader.m_Data, dataOffset, tcpDataSize);
+                                    int index = getIndexAfterEmptyLine(httpResponse);
+
+                                    //目前index + 5貌似只支持gzip
+                                    byte[] bytes = Arrays.copyOfRange(tcpHeader.m_Data, dataOffset + index + 5, size);
+                                    bytes = uncompress(bytes);
+                                    String httpBody = new String(bytes, "UTF-8");
+                                    httpResponse = httpResponse.substring(0, index) + httpBody;
+                                    Log.e(">>>>>data", "\n响应的数据："+httpResponse);
+
+//                                    String s1=new String(httpResponse.getBytes("ISO-8859-1"), "utf-8");
+//                                    Log.e(">>>>>data", "\n响应的数据(http层)(ISO-8859-1):\n" + s1);
+//                                    s1=new String(httpResponse.getBytes("gbk"), "utf-8");
+//                                    Log.e(">>>>>data", "\n响应的数据(http层)(gbk):\n" + s1);
+                            }
+                            // TODO: 2018/6/8 本地添加的获取数据，并打印log的测试方法  end
                         } else {
                             System.out.printf("NoSession: %s %s\n", ipHeader.toString(), tcpHeader.toString());
                         }
                     } else {
-
+                        // TODO: 2018/6/8 发请求
                         // 添加端口映射
                         int portKey = tcpHeader.getSourcePort();
                         NatSession session = NatSessionManager.getSession(portKey);
@@ -288,9 +343,30 @@ public class LocalVpnService extends VpnService implements Runnable {
                             return;//丢弃tcp握手的第二个ACK报文。因为客户端发数据的时候也会带上ACK，这样可以在服务器Accept之前分析出HOST信息。
                         }
 
+                        // todo test begin：找到http数据的位置，打印一下
+                        int dataOffset = tcpHeader.m_Offset + tcpHeader.getHeaderLength();
+
+                        switch (tcpHeader.m_Data[dataOffset]) {
+                            case 'G'://GET
+                            case 'H'://HEAD
+                            case 'P'://POST,PUT
+                            case 'D'://DELETE
+                            case 'O'://OPTIONS
+                            case 'T'://TRACE
+                            case 'C'://CONNECT
+                                //从dataOffset到tcp数据的结尾，就是http的数据
+                                String httpRequest = new String(tcpHeader.m_Data, dataOffset, tcpDataSize);
+                                Log.e(">>>>>data", "请求的数据(http层):\n" + httpRequest);
+                                break;
+                            case 0x16://SSL
+                                break;
+                        }
+                        // todo end
+
                         //分析数据，找到host
                         if (session.BytesSent == 0 && tcpDataSize > 10) {
-                            int dataOffset = tcpHeader.m_Offset + tcpHeader.getHeaderLength();
+//                            int dataOffset = tcpHeader.m_Offset + tcpHeader.getHeaderLength();
+                            // TODO:  这里拿到app请求的host
                             String host = HttpHostHeaderParser.parseHost(tcpHeader.m_Data, dataOffset, tcpDataSize);
                             if (host != null) {
                                 session.RemoteHost = host;
@@ -327,6 +403,45 @@ public class LocalVpnService extends VpnService implements Runnable {
         }
     }
 
+    public static byte[] uncompress(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) {
+            return new byte[256];
+        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayInputStream in = new ByteArrayInputStream(bytes);
+        try {
+            GZIPInputStream ungzip = new GZIPInputStream(in);
+            byte[] buffer = new byte[256];
+            int n;
+            while ((n = ungzip.read(buffer)) >= 0) {
+                out.write(buffer, 0, n);
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        return out.toByteArray();
+    }
+
+    public static int getIndexAfterEmptyLine(String str) {
+        if (str.contains("\n\n")) {
+            return str.indexOf("\n\n") + 2;
+        }
+        if (str.contains("\r\n\r\n")) {
+            return str.indexOf("\r\n\r\n") + 4;
+        }
+        if (str.contains("\r\n\r")) {
+            return str.indexOf("\r\n\r") + 3;
+        }
+        if (str.contains("\n\r\n")) {
+            return str.indexOf("\n\r\n") + 3;
+        }
+        if (str.contains("\n\r")) {
+            return str.indexOf("\n\r") + 2;
+        }
+        return -1;
+    }
+
     private void waitUntilPreapred() {
         while (prepare(this) != null) {
             try {
@@ -337,24 +452,31 @@ public class LocalVpnService extends VpnService implements Runnable {
         }
     }
 
+    /**
+     * 建立vpn连接
+     */
     private ParcelFileDescriptor establishVPN() throws Exception {
         Builder builder = new Builder();
+        //设置VPN接口的最大传输单元（MTU）。 如果未设置，则将使用操作系统中的默认值。
         builder.setMtu(ProxyConfig.Instance.getMTU());
         if (ProxyConfig.IS_DEBUG)
             System.out.printf("setMtu: %d\n", ProxyConfig.Instance.getMTU());
 
+        //初始化ip，这个ip是干嘛的?
         IPAddress ipAddress = ProxyConfig.Instance.getDefaultLocalIP();
         LOCAL_IP = CommonMethods.ipStringToInt(ipAddress.Address);
         builder.addAddress(ipAddress.Address, ipAddress.PrefixLength);
         if (ProxyConfig.IS_DEBUG)
             System.out.printf("addAddress: %s/%d\n", ipAddress.Address, ipAddress.PrefixLength);
 
+        //初始化dns
         for (ProxyConfig.IPAddress dns : ProxyConfig.Instance.getDnsList()) {
             builder.addDnsServer(dns.Address);
             if (ProxyConfig.IS_DEBUG)
                 System.out.printf("addDnsServer: %s\n", dns.Address);
         }
 
+        //设置路由
         if (ProxyConfig.Instance.getRouteList().size() > 0) {
             for (ProxyConfig.IPAddress routeAddress : ProxyConfig.Instance.getRouteList()) {
                 builder.addRoute(routeAddress.Address, routeAddress.PrefixLength);
@@ -379,7 +501,7 @@ public class LocalVpnService extends VpnService implements Runnable {
             String value = (String) method.invoke(null, name);
             if (value != null && !"".equals(value) && !servers.contains(value)) {
                 servers.add(value);
-                if (value.replaceAll("\\d", "").length() == 3){//防止IPv6地址导致问题
+                if (value.replaceAll("\\d", "").length() == 3) {//防止IPv6地址导致问题
                     builder.addRoute(value, 32);
                 } else {
                     builder.addRoute(value, 128);
@@ -389,16 +511,16 @@ public class LocalVpnService extends VpnService implements Runnable {
             }
         }
 
-        if (AppProxyManager.isLollipopOrAbove){
-            if (AppProxyManager.Instance.proxyAppInfo.size() == 0){
+        if (AppProxyManager.isLollipopOrAbove) {
+            if (AppProxyManager.Instance.proxyAppInfo.size() == 0) {
                 writeLog("Proxy All Apps");
             }
-            for (AppInfo app : AppProxyManager.Instance.proxyAppInfo){
+            for (AppInfo app : AppProxyManager.Instance.proxyAppInfo) {
                 builder.addAllowedApplication("com.vm.shadowsocks");//需要把自己加入代理，不然会无法进行网络连接
-                try{
+                try {
                     builder.addAllowedApplication(app.getPkgName());
                     writeLog("Proxy App: " + app.getAppLabel());
-                } catch (Exception e){
+                } catch (Exception e) {
                     e.printStackTrace();
                     writeLog("Proxy App Fail: " + app.getAppLabel());
                 }

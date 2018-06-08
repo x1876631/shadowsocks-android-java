@@ -21,7 +21,7 @@ public class AppProxyManager {
     private Context mContext;
 
     public List<AppInfo> mlistAppInfo = new ArrayList<AppInfo>();
-    public List<AppInfo> proxyAppInfo = new ArrayList<AppInfo>();
+    public List<AppInfo> proxyAppInfo = new ArrayList<AppInfo>();//已经代理app的列表
 
     public AppProxyManager(Context context){
         this.mContext = context;
@@ -58,6 +58,9 @@ public class AppProxyManager {
         return false;
     }
 
+    /**
+     * 从本地读取已经代理的app的列表
+     */
     private void readProxyAppsList() {
         SharedPreferences preferences = mContext.getSharedPreferences("shadowsocksProxyUrl", MODE_PRIVATE);
         String tmpString = preferences.getString(PROXY_APPS, "");

@@ -11,6 +11,9 @@ import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.Iterator;
 
+/**
+ * tcp代理服务
+ */
 public class TcpProxyServer implements Runnable {
 
     public boolean Stopped;

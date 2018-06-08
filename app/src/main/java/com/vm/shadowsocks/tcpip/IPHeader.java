@@ -19,8 +19,8 @@ public class IPHeader {
     public static final int offset_dest_ip = 16; // 16: Destination address
     static final int offset_op_pad = 20; // 20: Option + Padding
 
-    public byte[] m_Data;
-    public int m_Offset;
+    public byte[] m_Data;//数据缓存
+    public int m_Offset;//偏移值
 
     public IPHeader(byte[] data, int offset) {
         this.m_Data = data;

@@ -7,6 +7,7 @@ import java.util.Locale;
 
 public class HttpHostHeaderParser {
 
+    // TODO: 2018/6/8 关键 判断是否是http请求
     public static String parseHost(byte[] buffer, int offset, int count) {
         try {
             switch (buffer[offset]) {

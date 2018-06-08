@@ -27,9 +27,12 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 
+/**
+ * 代理配置
+ */
 public class ProxyConfig {
     public static final ProxyConfig Instance = new ProxyConfig();
-    public final static boolean IS_DEBUG = false;
+    public final static boolean IS_DEBUG = true;
     public static String AppInstallID;
     public static String AppVersion;
     public final static int FAKE_NETWORK_MASK = CommonMethods.ipStringToInt("255.255.0.0");
@@ -54,7 +57,7 @@ public class ProxyConfig {
     Timer m_Timer;
 
     public class IPAddress {
-        public final String Address;
+        public final String Address;//ip地址
         public final int PrefixLength;
 
         public IPAddress(String address, int prefixLength) {
@@ -309,6 +312,7 @@ public class ProxyConfig {
                 continue;
             }
 
+            //解析每一行里的所有数据
             String tagString = items[0].toLowerCase(Locale.ENGLISH).trim();
             try {
                 if (!tagString.startsWith("#")) {
@@ -316,10 +320,13 @@ public class ProxyConfig {
                         System.out.println(line);
 
                     if (tagString.equals("ip")) {
+                        //配置默认ip：172.25.0.1
                         addIPAddressToList(items, 1, m_IpList);
                     } else if (tagString.equals("dns")) {
+                        //配置默认dns：172.25.0.1、223.6.6.6、114.114.114.114、8.8.8.8
                         addIPAddressToList(items, 1, m_DnsList);
                     } else if (tagString.equals("route")) {
+                        //配置默认路由：0.0.0.0/0
                         addIPAddressToList(items, 1, m_RouteList);
                     } else if (tagString.equals("proxy")) {
                         addProxyToList(items, 1);
@@ -349,8 +356,9 @@ public class ProxyConfig {
 
         }
 
-        //查找默认代理。
+
         if (m_ProxyList.size() == 0) {
+            //查找默认代理
             tryAddProxy(lines);
         }
     }

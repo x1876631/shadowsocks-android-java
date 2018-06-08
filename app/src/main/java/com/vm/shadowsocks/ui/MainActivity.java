@@ -49,10 +49,11 @@ public class MainActivity extends Activity implements
 
     private static final int START_VPN_SERVICE_REQUEST_CODE = 1985;
 
-    private Switch switchProxy;
+    private Switch switchProxy;//开启关闭vpn的开关
     private TextView textViewLog;
     private ScrollView scrollViewLog;
-    private TextView textViewProxyUrl, textViewProxyApp;
+    private TextView textViewProxyUrl, //代理url配置地址
+            textViewProxyApp;
     private Calendar mCalendar;
 
     @Override
@@ -66,6 +67,8 @@ public class MainActivity extends Activity implements
         findViewById(R.id.AppSelectLayout).setOnClickListener(this);
 
         textViewProxyUrl = (TextView) findViewById(R.id.textViewProxyUrl);
+
+        //读取代理地址
         String ProxyUrl = readProxyUrl();
         if (TextUtils.isEmpty(ProxyUrl)) {
             textViewProxyUrl.setText(R.string.config_not_set_value);
@@ -77,10 +80,12 @@ public class MainActivity extends Activity implements
         scrollViewLog.fullScroll(ScrollView.FOCUS_DOWN);
 
         mCalendar = Calendar.getInstance();
+
+        // TODO: 2018/6/7 这个LocalVpnService的回调是干嘛的？
         LocalVpnService.addOnStatusChangedListener(this);
 
-        //Pre-App Proxy
-        if (AppProxyManager.isLollipopOrAbove){
+        //Pre-App Proxy，获取代理app列表需要api 20以上
+        if (AppProxyManager.isLollipopOrAbove) {
             new AppProxyManager(this);
             textViewProxyApp = (TextView) findViewById(R.id.textViewAppSelectDetail);
         } else {
@@ -142,7 +147,8 @@ public class MainActivity extends Activity implements
             return;
         }
 
-        if (v.getTag().toString().equals("ProxyUrl")){
+        if (v.getTag().toString().equals("ProxyUrl")) {
+            //点击设置代理url
             new AlertDialog.Builder(this)
                     .setTitle(R.string.config_url)
                     .setItems(new CharSequence[]{
@@ -162,7 +168,8 @@ public class MainActivity extends Activity implements
                         }
                     })
                     .show();
-        } else if (v.getTag().toString().equals("AppSelect")){
+        } else if (v.getTag().toString().equals("AppSelect")) {
+            //点击去选择要代理的app
             System.out.println("abc");
             startActivity(new Intent(this, AppManager.class));
         }
@@ -191,7 +198,9 @@ public class MainActivity extends Activity implements
                         }
 
                         String ProxyUrl = editText.getText().toString().trim();
+                        //代理url允许以ss://和http://开头
                         if (isValidUrl(ProxyUrl)) {
+                            //把url保存在本地
                             setProxyUrl(ProxyUrl);
                             textViewProxyUrl.setText(ProxyUrl);
                         } else {
@@ -236,18 +245,24 @@ public class MainActivity extends Activity implements
         if (LocalVpnService.IsRunning != isChecked) {
             switchProxy.setEnabled(false);
             if (isChecked) {
+                //原本vpn关闭的，现在要开启了
                 Intent intent = LocalVpnService.prepare(this);
                 if (intent == null) {
+                    Log.e("xuye","intent == null，启动VPNService...");
                     startVPNService();
                 } else {
                     startActivityForResult(intent, START_VPN_SERVICE_REQUEST_CODE);
                 }
             } else {
+                //关闭vpn
                 LocalVpnService.IsRunning = false;
             }
         }
     }
 
+    /**
+     * 开启vpn
+     */
     private void startVPNService() {
         String ProxyUrl = readProxyUrl();
         if (!isValidUrl(ProxyUrl)) {
