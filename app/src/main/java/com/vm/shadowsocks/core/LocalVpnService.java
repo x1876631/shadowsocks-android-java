@@ -286,7 +286,7 @@ public class LocalVpnService extends VpnService implements Runnable {
                         // 收到本地TCP服务器数据
                         NatSession session = NatSessionManager.getSession(tcpHeader.getDestinationPort());
                         if (session != null) {
-                            // TODO: 2018/6/8 尝试修改思路：尝试去掉ip 和tcp header，解析http协议
+                            // TODO: 去掉ip 和tcp header，解析出http协议报文数据
                             ipHeader.setSourceIP(ipHeader.getDestinationIP());
                             tcpHeader.setSourcePort(session.RemotePort);
                             ipHeader.setDestinationIP(LOCAL_IP);
@@ -299,28 +299,16 @@ public class LocalVpnService extends VpnService implements Runnable {
                             int dataOffset = tcpHeader.m_Offset + tcpHeader.getHeaderLength();
                             int tcpDataSize = ipHeader.getDataLength() - tcpHeader.getHeaderLength();
                             switch (tcpHeader.m_Data[dataOffset]) {
+                                case 'G'://GET
                                 case 'H'://HEAD
-//                                    Log.e(">>>>>data", "响应的数据(http层)(byte版) begin:\n");
-//                                    StringBuilder sb = new StringBuilder();
-//                                    for(int i = dataOffset;i<tcpDataSize;i++){
-//                                        sb.append(tcpHeader.m_Data[i]);
-//                                    }
-//                                    Log.e(">>>>>data",sb.toString()+"\n响应的数据(http层)(byte版) end");
-
+                                case 'P'://POST,PUT
                                     String httpResponse = new String(tcpHeader.m_Data, dataOffset, tcpDataSize);
-                                    int index = getIndexAfterEmptyLine(httpResponse);
 
-                                    //目前index + 5貌似只支持gzip
-                                    byte[] bytes = Arrays.copyOfRange(tcpHeader.m_Data, dataOffset + index + 5, size);
-                                    bytes = uncompress(bytes);
-                                    String httpBody = new String(bytes, "UTF-8");
-                                    httpResponse = httpResponse.substring(0, index) + httpBody;
-                                    Log.e(">>>>>data", "\n响应的数据："+httpResponse);
-
-//                                    String s1=new String(httpResponse.getBytes("ISO-8859-1"), "utf-8");
-//                                    Log.e(">>>>>data", "\n响应的数据(http层)(ISO-8859-1):\n" + s1);
-//                                    s1=new String(httpResponse.getBytes("gbk"), "utf-8");
-//                                    Log.e(">>>>>data", "\n响应的数据(http层)(gbk):\n" + s1);
+                                    if(httpResponse.contains("Content-Encoding: gzip")){
+                                        Log.e(">>>>>data","当前响应编码格式为：gzip，即将采用gzip解析");
+                                        httpResponse = dedicateGzipResponse(httpResponse,tcpHeader,dataOffset,size);
+                                    }
+                                    Log.e(">>>>>data", "\n响应的数据：" + httpResponse);
                             }
                             // TODO: 2018/6/8 本地添加的获取数据，并打印log的测试方法  end
                         } else {
@@ -401,6 +389,20 @@ public class LocalVpnService extends VpnService implements Runnable {
                 }
                 break;
         }
+    }
+
+    /**
+     * 解析Content-Encoding=gzip编码格式的响应
+     */
+    public String dedicateGzipResponse(
+            String httpResponse, TCPHeader tcpHeader, int dataOffset, int size) throws IOException {
+        int index = getIndexAfterEmptyLine(httpResponse);
+        //目前index + 5貌似只支持gzip
+        byte[] bytes = Arrays.copyOfRange(tcpHeader.m_Data, dataOffset + index + 5, size);
+        bytes = uncompress(bytes);
+        String httpBody = new String(bytes, "UTF-8");
+        httpResponse = httpResponse.substring(0, index) + httpBody;
+        return httpResponse;
     }
 
     public static byte[] uncompress(byte[] bytes) {
